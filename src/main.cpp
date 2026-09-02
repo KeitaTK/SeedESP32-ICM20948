@@ -81,7 +81,7 @@ static const float D2R = 0.017453292519943295f;  // deg -> rad
  * 現状は「軸の入れ替えなし・符号のみ」のため係数は ±1。
  */
 static const int8_t AG_NED_SIGN[3] = {  1,  1,  1 };  // accel / gyro 共通 (z-up)
-static const int8_t MAG_NED_SIGN[3] = {  1,  1, -1 };  // mag (Z反転補正)
+static const int8_t MAG_NED_SIGN[3] = {  1,  1,  1 };  // mag (Z反転補正) [TEST: -1→+1 変更中 2026/09/03]
 
 ICM20948_WE imu(IMU_I2C_ADDR);
 
@@ -220,6 +220,27 @@ static void sampleAndSend(uint32_t nowUs) {
         cur[6 + i] = mag[i] * MAG_NED_SIGN[i]; // mag   [uT]   (NED)
     }
 
+    /* ---- 起動時ジャイロバイアス キャリブレーション(静止前提) ---- */
+    static float gbias[3] = {0,0,0};
+    static int gcalLeft = 250;   // 100Hz × 2.5秒
+    static bool gcalDone = false;
+
+    if (!gcalDone) {
+        gbias[0] += cur[3];
+        gbias[1] += cur[4];
+        gbias[2] += cur[5];
+        if (--gcalLeft == 0) {
+            gbias[0] /= 250.0f;
+            gbias[1] /= 250.0f;
+            gbias[2] /= 250.0f;
+            gcalDone = true;
+            logMsg("#gyro bias removed");
+        }
+        return;  // キャリブレーション完了までは送信をスキップ
+    }
+    cur[3] -= gbias[0];
+    cur[4] -= gbias[1];
+    cur[5] -= gbias[2];
     /* ---- §5-2 / §5-3: 完全一致(データ更新なし)の検出 ----
      * NACK発生時、ライブラリの内部バッファは更新されないため、
      * 「9軸全軸が前回値と完全一致」という形でしか検知できない。
