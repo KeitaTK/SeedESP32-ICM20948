@@ -1,0 +1,13 @@
+[project]
+name = "icm20948-rotation-visualizer"
+version = "0.1.0"
+description = "ICM-20948 rotation direction real-time 3D visualizer (USB serial firmware)"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.26",
+    "matplotlib>=3.8",
+    "pyserial>=3.5",
+]
+
+[tool.uv]
+package = false
