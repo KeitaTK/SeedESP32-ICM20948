@@ -5,12 +5,16 @@
  *   ・I2Cタイミングバグ / フリーズに対してフェイルセーフ(自己修復)を内蔵
  *   ・単位変換済みCSVを100Hz / USB CDC経由で連続送信
  *
- * 【出力フォーマット】(単位込み・タイムスタンプなし)
+ * 【出力フォーマット】(単位込み・タイムスタンプなし・z-up右手系)
  *   seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
  *   seq    : 0..65535 循環の連番(欠落検知用)
- *   ax..az : 加速度 [g]      (wollewaldライブラリは元々[g]を返す)
- *   gx..gz : ジャイロ [rad/s](ライブラリは[dps]のため π/180 で変換)
- *   mx..mz : 地磁気 [µT]     (そのまま)
+ *   ax..az : 加速度 [g]      (z-up: 水平静止で az=+1。X=北, Y=西, Z=上)
+ *   gx..gz : ジャイロ [rad/s](z-up: 右ねじ正)
+ *   mx..mz : 地磁気 [µT]     (z-up: Z は加速度と同向きに統一)
+ *   ※ 下流の RTIMULib が「水平静止で accel z=+1 / z-up」を期待するため、
+ *      NED(Z下)から Y と Z を反転し z-up の右手系にした。
+ *      基板X(印字)を北に置くと NWU(X=北, Y=西, Z=上)。
+ *      加速度・ジャイロは生チップ軸をそのまま、地磁気は Z のみ反転。
  *
  * 【フェイルセーフ(要件書 §5)】
  *   §5-1 初期化失敗  -> 3回リトライ後に ESP.restart()
@@ -61,6 +65,23 @@ static const float MAG_MIN_UT    = 10.0f;
 static const float MAG_MAX_UT    = 100.0f;
 
 static const float D2R = 0.017453292519943295f;  // deg -> rad
+
+/* ================= 軸マッピング(z-up 右手系) =================
+ * 下流の RTIMULib が「水平静止で accel z=+1 / z-up」を期待するため、
+ * 旧 NED(X=北,Y=東,Z=下)から「Y と Z を反転」して z-up 右手系に変更した。
+ *   NED: x=+ax, y=-ay, z=-az  →  z-up: x=+ax, y=+ay, z=+az
+ * 「Z だけ反転」だと左手系(外積計算が破綻)になるため、Y と同時に反転する。
+ *
+ * 出力フレーム(生チップ軸そのもの = 右手系):
+ *   基板X(印字)を北に置くと X=北, Y=西, Z=上 の NWU 相当。
+ *   加速度・ジャイロ(同一パッケージ内で軸共有):
+ *     x=+ax, y=+ay, z=+az   (符号反転なし = 生センサ軸)
+ *   地磁気(AK09916 は別ダイで Z が加速度と反転):
+ *     x=+mx, y=+my, z=-mz   (Z のみ反転し「上向き正」に統一)
+ * 現状は「軸の入れ替えなし・符号のみ」のため係数は ±1。
+ */
+static const int8_t AG_NED_SIGN[3] = {  1,  1,  1 };  // accel / gyro 共通 (z-up)
+static const int8_t MAG_NED_SIGN[3] = {  1,  1, -1 };  // mag (Z反転補正)
 
 ICM20948_WE imu(IMU_I2C_ADDR);
 
@@ -189,9 +210,15 @@ static void sampleAndSend(uint32_t nowUs) {
     imu.getGyrValues(&gyrV);   // [dps] -> rad/s へ変換
     imu.getMagValues(&magV);   // [uT]
 
-    cur[0] = gV.x;   cur[1] = gV.y;   cur[2] = gV.z;
-    cur[3] = gyrV.x * D2R; cur[4] = gyrV.y * D2R; cur[5] = gyrV.z * D2R;
-    cur[6] = magV.x; cur[7] = magV.y; cur[8] = magV.z;
+    /* 生センサ軸 → z-up 右手系(X=北, Y=西, Z=上)へ変換してから出力する */
+    float acc[3] = { gV.x,         gV.y,         gV.z };
+    float gyr[3] = { gyrV.x * D2R, gyrV.y * D2R, gyrV.z * D2R };
+    float mag[3] = { magV.x,       magV.y,       magV.z };
+    for (int i = 0; i < 3; i++) {
+        cur[i]     = acc[i] * AG_NED_SIGN[i];  // accel [g]    (NED)
+        cur[3 + i] = gyr[i] * AG_NED_SIGN[i];  // gyro  [rad/s](NED)
+        cur[6 + i] = mag[i] * MAG_NED_SIGN[i]; // mag   [uT]   (NED)
+    }
 
     /* ---- §5-2 / §5-3: 完全一致(データ更新なし)の検出 ----
      * NACK発生時、ライブラリの内部バッファは更新されないため、
