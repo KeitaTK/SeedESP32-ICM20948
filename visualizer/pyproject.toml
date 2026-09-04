@@ -1,7 +1,7 @@
 [project]
-name = "icm20948-rotation-visualizer"
+name = "icm20948-gauge-monitor"
 version = "0.1.0"
-description = "ICM-20948 rotation direction real-time 3D visualizer (USB serial firmware)"
+description = "ICM-20948 NED 9-axis realtime analog-gauge monitor (USB serial firmware)"
 requires-python = ">=3.9"
 dependencies = [
     "numpy>=1.26",
