@@ -153,6 +153,23 @@ uv run axis_capture.py --port COM9   # COM 番号は環境に合わせる
 - 出力: `capture_axis_summary.csv`（平均/最小/最大）と `capture_axis_raw.csv`（全サンプル）
 - 軸マッピングの考え方と判定基準は `archive/AXIS_CALIBRATION.md` 参照（過去の確定記録）
 
+### 5-1 リアルタイムゲージモニタ（`gauge_monitor.py`）
+
+```powershell
+cd visualizer
+uv run gauge_monitor.py                      # ダミー固定値表示（既定）
+uv run gauge_monitor.py --live --port COM9   # 実機のUSBシリアルをリアルタイム表示
+uv run gauge_monitor.py --selftest           # GUIを開かず描画動作だけ確認
+```
+
+- 送信値（NED）を **3行×3列**（行 = accel [g] / gyro [rad/s] / mag [µT]、列 = X/Y/Z 軸）の
+  アナログタコメーター風ゲージでリアルタイム表示する
+- ゲージの振れ幅はセンサのフルスケール相当（±2g / ±250dps→rad/s / ±100µT）から算出
+  （値はファイル冒頭の `ACCEL_FS_G` / `GYRO_FS_DPS` / `MAG_FS_UT` で変更可）
+- 冒頭の `DUMMY_DATA = True` なら USB 接続なしで固定ダミー値（NED 水平静止相当: az=-1.0）を表示
+  `--live` を付けるとダミーを無効化し COM ポートを読み取る
+- 初回は matplotlib / numpy などの導入のため `uv run` が数分かかることがある
+
 ---
 
 ## 6. 次のアクション（既知の課題）
