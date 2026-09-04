@@ -78,7 +78,7 @@
    - ジャイロ: `cur[3..5] = gyrV[rad/s] × GYRO_SIGN`（NED 右手系）
    - 地磁気: `cur[6..8] = magV × MAG_SIGN`
 4. **ジャイロバイアス除去**（起動時 250 サンプル＝2.5 秒の静止平均を減算。完了まで送信スキップ）
-5. テキスト CSV で送信（`seq,ax,ay,az,gx,gy,gz,mx,my,mz\n`）
+5. テキスト CSV で送信（`seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz\n`。ts_us は読取完了 micros()＝動的 dt 用）
    - acc/gyro は小数 5 桁、mag は小数 2 桁
 
 **→ 軸合わせは「物理量（float）に正規化した後」に行っており、16bit 生データは送信していない。**
@@ -86,8 +86,10 @@
 ### 3-3 出力フォーマットと座標系
 
 ```
-seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
-  seq  : uint16 循環連番（欠落検知用）
+seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz\n
+  seq   : uint16 循環連番（欠落検知用）
+  ts_us : センサ読取完了時刻 micros()（32bit・約71.5分でラップ）。
+          ホストは前サンプルとの差分から実サンプル間隔（動的 dt）を復元
   ax..az : 加速度 [g]     ※小数5桁
   gx..gz : ジャイロ [rad/s]（右ねじ正）
   mx..mz : 地磁気 [µT]    ※小数2桁
@@ -136,7 +138,7 @@ static const int8_t MAG_SIGN[3]   = { 1, 1, 1 };   // mag   [uT]    (AK09916 生
 1. VSCode + PlatformIO で本フォルダを開く
 2. ステータスバーの ✓（Build）→ →（Upload）で XIAO に書き込み
 3. PlatformIO Serial Monitor（115200）で確認
-   - `#init OK` → `#gyro bias removed` → `seq,ax,ay,az,gx,gy,gz,mx,my,mz` の連続出力
+   - `#init OK` → `#gyro bias removed` → `seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz` の連続出力
    - 水平静止（部品面を上）で `az ≈ +1.0`、`ax, ay ≈ 0`
 
 設定（`platformio.ini`）: board=`seeed_xiao_esp32c3` / framework=arduino / lib=`wollewald/ICM20948_WE @ ^1.2.9`
@@ -152,7 +154,7 @@ cd visualizer
 uv run axis_capture.py --port COM9   # COM 番号は環境に合わせる
 ```
 
-- 現行ファームの出力（`seq,ax,ay,az,gx,gy,gz,mx,my,mz`）を読み、14 ステップの
+- 現行ファームの出力（`seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz`）を読み、14 ステップの
   実験シーケンス（加速度 6 姿勢 → ジャイロ 4 回転 → 地磁気 4 方位）に沿って記録
 - 操作: `Enter`=記録 / `r`=直前をやり直し / `q`=中断して保存
 - 出力: `capture_axis_summary.csv`（平均/最小/最大）と `capture_axis_raw.csv`（全サンプル）

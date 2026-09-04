@@ -5,9 +5,11 @@
  *   ・I2Cタイミングバグ / フリーズに対してフェイルセーフ(自己修復)を内蔵
  *   ・単位変換済みCSVを100Hz / USB CDC経由で連続送信
  *
- * 【出力フォーマット】(単位込み・タイムスタンプなし・NED右手系 / 加速度は重力ベクトル表記)
- *   seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
+ * 【出力フォーマット】(単位込み・NED右手系 / 加速度は重力ベクトル表記 / 動的dt対応)
+ *   seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz\n
  *   seq    : 0..65535 循環の連番(欠落検知用)
+ *   ts_us  : readSensor() 完了直後の micros()(32bit・約71.5分でラップ)。
+ *            ホスト側が前サンプルとの差分から実サンプル間隔(動的 dt)を復元する。
  *   ax..az : 加速度 [g]      (静止: 部品面を上で az=+1。X=北, Y=東, Z=下)
  *   gx..gz : ジャイロ [rad/s](NED: 右ねじ正。上から見て時計回りが +gz)
  *   mx..mz : 地磁気 [µT]     (NED: Z は下向き正)
@@ -176,10 +178,13 @@ static bool initSensor() {
 }
 
 /* ---------------------------------------------------------------
- * 1行のCSV送信: seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
+ * 1行のCSV送信: seq,ts_us,ax,ay,az,gx,gy,gz,mx,my,mz\n
+ * tsUs: センサ読出し完了時刻(micros()・32bitラップ)
  * ------------------------------------------------------------- */
-static void sendCsvLine(uint16_t s, const float v[9]) {
+static void sendCsvLine(uint16_t s, uint32_t tsUs, const float v[9]) {
     Serial.print(s);
+    Serial.print(',');
+    Serial.print(tsUs);
     Serial.print(',');
     Serial.print(v[0], 5);  // accel [g]
     Serial.print(',');
@@ -209,6 +214,7 @@ static void sampleAndSend(uint32_t nowUs) {
     uint32_t t0 = micros();
     imu.readSensor();
     uint32_t readUs = micros() - t0;
+    uint32_t sampleUs = micros();   // データ取得完了時刻(動的 dt 用・送信スキップ時は進めない)
 
     xyzFloat gV, gyrV, magV;
     imu.getGValues(&gV);       // [g]
@@ -328,7 +334,7 @@ static void sampleAndSend(uint32_t nowUs) {
 
     /* ---- 送信(CDC未接続 or TXリング不足時は送らず次の周期へ) ---- */
     if (warmupLeft == 0 && Serial && Serial.availableForWrite() >= SEND_GUARD_BYTES) {
-        sendCsvLine(seq, cur);
+        sendCsvLine(seq, sampleUs, cur);
         seq++;  // uint16なので 65535 の次は 0 へ戻る
     }
 
