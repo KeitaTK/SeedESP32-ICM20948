@@ -5,23 +5,23 @@
  *   ・I2Cタイミングバグ / フリーズに対してフェイルセーフ(自己修復)を内蔵
  *   ・単位変換済みCSVを100Hz / USB CDC経由で連続送信
  *
- * 【出力フォーマット】(単位込み・タイムスタンプなし・z-up右手系)
+ * 【出力フォーマット】(単位込み・タイムスタンプなし・NED右手系)
  *   seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
  *   seq    : 0..65535 循環の連番(欠落検知用)
- *   ax..az : 加速度 [g]      (z-up: 水平静止で az=+1。X=北, Y=西, Z=上)
- *   gx..gz : ジャイロ [rad/s](z-up: 右ねじ正)
- *   mx..mz : 地磁気 [µT]     (z-up: Z は加速度と同向きに統一)
- *   ※ 下流の RTIMULib が「水平静止で accel z=+1 / z-up」を期待するため、
- *      NED(Z下)から Y と Z を反転し z-up の右手系にした。
- *      基板X(印字)を北に置くと NWU(X=北, Y=西, Z=上)。
- *      加速度・ジャイロは生チップ軸をそのまま、地磁気は Z のみ反転。
+ *   ax..az : 加速度 [g]      (NED: 水平静止で az=-1。X=北, Y=東, Z=下)
+ *   gx..gz : ジャイロ [rad/s](NED: 右ねじ正。上から見て時計回りが +gz)
+ *   mx..mz : 地磁気 [µT]     (NED: Z は下向き正)
+ *   ※ 加速度・ジャイロの生チップ軸は NWU(X=北, Y=西, Z=上)のため、
+ *      Y と Z を反転して NED(X=北, Y=東, Z=下)に統一した。
+ *      地磁気(AK09916)は生チップ軸が既に NED のため反転しない。
+ *      基板X(印字)を北に置くと X=北, Y=東, Z=下。
  *
  * 【フェイルセーフ(要件書 §5)】
  *   §5-1 初期化失敗  -> 3回リトライ後に ESP.restart()
  *   §5-2 読み取り失敗 -> フリーズ初回のみ WHO_AM_I でバス死活確認(NACK検知)。
  *        NACK連続10回(≒100ms)、または読出し8ms超のハング連続10回で ESP.restart()
  *   §5-3 完全一致フリーズ -> 9軸全軸が前回値と完全一致を50回(≒500ms)連続で ESP.restart()
- *   §5-4 異常値持続 -> 加速度合成(0.5〜2.5g)・ジャイロ各軸(±30rad/s)・
+ *   §5-4 異常値持続 -> 加速度合成(0.5〜1.9g)・ジャイロ各軸(±30rad/s)・
  *        磁気合成(10〜100µT) を全て外れる状態が100回(≒1s)連続で ESP.restart()
  *
  * 【注記】wollewald/ICM20948_WE v1.2.9 の readSensor() は void でありI2Cエラー
@@ -59,29 +59,28 @@ static const uint16_t RANGE_RESTART_FRAMES  = 100; // §5-4 全レンジ外(≒1
 
 /* §5-4 物理レンジ */
 static const float ACC_MAG_MIN_G = 0.5f;
-static const float ACC_MAG_MAX_G = 2.5f;
+static const float ACC_MAG_MAX_G = 1.9f;   // ±2gレンジ内で検出可能な上限(静止時≒1gに対して余裕)
 static const float GYR_MAX_RPS   = 30.0f;   // rad/s
 static const float MAG_MIN_UT    = 10.0f;
 static const float MAG_MAX_UT    = 100.0f;
 
 static const float D2R = 0.017453292519943295f;  // deg -> rad
 
-/* ================= 軸マッピング(z-up 右手系) =================
- * 下流の RTIMULib が「水平静止で accel z=+1 / z-up」を期待するため、
- * 旧 NED(X=北,Y=東,Z=下)から「Y と Z を反転」して z-up 右手系に変更した。
- *   NED: x=+ax, y=-ay, z=-az  →  z-up: x=+ax, y=+ay, z=+az
+/* ================= 軸マッピング(NED 右手系) =================
+ * 加速度・ジャイロ(生チップ軸 = NWU: X=北, Y=西, Z=上)を NED に統一する。
+ *   NWU: x=+ax, y=+ay, z=+az  →  NED: x=+ax, y=-ay, z=-az
  * 「Z だけ反転」だと左手系(外積計算が破綻)になるため、Y と同時に反転する。
  *
- * 出力フレーム(生チップ軸そのもの = 右手系):
- *   基板X(印字)を北に置くと X=北, Y=西, Z=上 の NWU 相当。
+ * 出力フレーム(NED = X=北, Y=東, Z=下 の右手系):
+ *   基板X(印字)を北に置くと X=北, Y=東, Z=下。
  *   加速度・ジャイロ(同一パッケージ内で軸共有):
- *     x=+ax, y=+ay, z=+az   (符号反転なし = 生センサ軸)
- *   地磁気(AK09916 は別ダイで Z が加速度と反転):
- *     x=+mx, y=+my, z=-mz   (Z のみ反転し「上向き正」に統一)
+ *     x=+ax, y=-ay, z=-az   (Y・Z を反転して NED 化)
+ *   地磁気(AK09916 は別ダイで Y・Z が加速度と反転実装):
+ *     x=+mx, y=+my, z=+mz   (生チップ軸が既に NED のため反転なし)
  * 現状は「軸の入れ替えなし・符号のみ」のため係数は ±1。
  */
-static const int8_t AG_NED_SIGN[3] = {  1,  1,  1 };  // accel / gyro 共通 (z-up)
-static const int8_t MAG_NED_SIGN[3] = {  1,  1,  1 };  // mag (Z反転補正) [TEST: -1→+1 変更中 2026/09/03]
+static const int8_t AG_NED_SIGN[3] = {  1, -1, -1 };  // accel / gyro 共通 (NWU→NED: Y・Z 反転)
+static const int8_t MAG_NED_SIGN[3] = {  1,  1,  1 };  // mag (AK09916 は生チップ軸が NED のため反転なし)
 
 ICM20948_WE imu(IMU_I2C_ADDR);
 
@@ -210,7 +209,7 @@ static void sampleAndSend(uint32_t nowUs) {
     imu.getGyrValues(&gyrV);   // [dps] -> rad/s へ変換
     imu.getMagValues(&magV);   // [uT]
 
-    /* 生センサ軸 → z-up 右手系(X=北, Y=西, Z=上)へ変換してから出力する */
+    /* 生センサ軸 → NED(X=北, Y=東, Z=下)へ変換してから出力する */
     float acc[3] = { gV.x,         gV.y,         gV.z };
     float gyr[3] = { gyrV.x * D2R, gyrV.y * D2R, gyrV.z * D2R };
     float mag[3] = { magV.x,       magV.y,       magV.z };

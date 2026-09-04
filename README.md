@@ -38,6 +38,16 @@
 - 配線長は 3〜5cm 以内。XIAO の IPEX コネクタへロッドアンテナを装着
 - 磁気計測時は金属・PC・電源類から 50cm 以上離す
 
+### 写真（参考）
+
+**Adafruit ICM-20948 9DoF ブレイクアウト基板**（基板の印字 X/Y が、このドキュメントで述べる座標系（X=北, Y=東/西, Z=上下）の基準になる）
+
+![Adafruit ICM-20948 9DoF ブレイクアウト基板](fig/Adafruit-TDK-InvenSense-ICM-20948-9-DoF-MU.png)
+
+**ICM-20948 パッケージ内のダイの軸定義**（地磁気 AK09916 は別ダイのため、Y・Z 軸が加速度・ジャイロと反転して実装されている）
+
+![ICM-20948 ダイ](fig/ICM20948-die.png)
+
 ---
 
 ## 3. XIAO ファームウェア仕様（`src/main.cpp`）
@@ -54,7 +64,7 @@
 
 - 船（ボート）用に重力 1g を精度良く測る用途のため、最高分解能の ±2g を採用
 - レンジ変更時はライブラリが変換係数を自動追従するため、ファーム側の修正は不要
-- 注意: ±2g を超える入力は飽和する。コード上のフェイルセーフ上限 `2.5g` は実際には到達しない（＝上限チェックは実質機能しない）
+- 注意: ±2g を超える入力は飽和する。フェイルセーフの加速度上限は `1.9g`（±2g レンジ内で検出可能）
 
 ### 3-2 データ変換パイプライン
 
@@ -83,27 +93,25 @@ seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
   mx..mz : 地磁気 [µT]    ※小数2桁
 ```
 
-- 設計意図は **z-up 右手系（基板X を北に置くと NWU 相当: X=北, Y=西, Z=上）**
-  下流 RTIMULib が「水平静止で accel z=+1 / z-up」を期待するため、旧 NED から移行した経緯
+- 座標系は **NED 右手系（基板X を北に置くと X=北, Y=東, Z=下）**
+  加速度・ジャイロ（生軸 NWU）は Y・Z を反転、地磁気（AK09916 生軸 NED）は反転なしで NED に統一
+- 水平静止（部品面を上）では `az ≈ -1.0`。ジャイロは Z が下向き正のため「上から見て時計回り」が `gz > 0`
 - `#` 始まりの行は診断コメント（`#init OK` / `#gyro bias removed` / `#RESTART <理由>` など）
 
-### 3-4 軸合わせの「現状」と未解決課題 ⚠️
+### 3-4 軸合わせ（NED 出力に統一・2026/09/04 適用）
 
-コード上の適用係数（`src/main.cpp` 83〜84 行）は **両方とも `{ 1, 1, 1 }`** のまま。
+コード上の適用係数（`src/main.cpp` 82〜83 行）は以下のとおり。
 
 ```cpp
-static const int8_t AG_NED_SIGN[3]  = { 1, 1, 1 };  // accel / gyro 共通
-static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };  // mag [TEST: -1→+1 変更中 2026/09/03]
+static const int8_t AG_NED_SIGN[3]  = { 1, -1, -1 };  // accel / gyro 共通 (NWU→NED: Y・Z 反転)
+static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };    // mag (AK09916 は生チップ軸が NED のため反転なし)
 ```
 
-つまり現状の送信値は **ライブラリ読み出し値そのもの（符号変換なし）** です。
-
-- ファイル上部コメント（8〜17 行）や `AXIS_CALIBRATION.md`（z-up 移行の追記）には
-  「mag は Z のみ反転して上向き正に統一」と書かれていますが、**これは実コードと食い違う記述（過去の説明）** です。
-- `KIMERA_AXIS_ANALYSIS.md`（2026/09/04）の解析では、
-  この状態だと「加速度・ジャイロ=NWU / 地磁気=AK09916 実装由来の NED」という**混在（キメラ状態）**になり、
-  ジャイロの逆キック・深ピッチ逸脱・ロール不安定の原因になると結論。
-  **推奨修正は `MAG_NED_SIGN = { 1, -1, -1 }`（地磁気の Y と Z を両方反転）ですが、本リポジトリには未適用**（解析記録のみ）。
+- 加速度・ジャイロの生チップ軸は **NWU（X=北, Y=西, Z=上）**、地磁気（AK09916）は
+  **NED（X=北, Y=東, Z=下）** で実装されている。出力を **NED に統一**する。
+- 「Z だけ反転」だと左手系になるため、AG は **Y と Z を同時に反転**して NED 化する。
+- この方針は `archive/KIMERA_AXIS_ANALYSIS.md` が指摘した「AG=NWU / MAG=NED の混在（キメラ状態）」を
+  **NED 側に統一して解消**するもの。下流（pypilot/RTIMULib）側の軸設定も NED 前提で整合させること。
 
 ### 3-5 フェイルセーフ（自己修復）
 
@@ -112,7 +120,7 @@ static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };  // mag [TEST: -1→+1 変更
 | §5-1 | 初期化失敗 | 3 回リトライ後 `ESP.restart()` |
 | §5-2 | NACK 連続 10 回 / 読出し 8ms 超が 10 回 / 正常読出しが 100ms 途絶 | `ESP.restart()` |
 | §5-3 | 9 軸が前回値と完全一致を 50 回（≒500ms）連続 | `ESP.restart()` |
-| §5-4 | 全レンジ外（acc 合成 0.5〜2.5g / gyr ±30rad/s / mag 10〜100µT）が 1s 継続 | `ESP.restart()` |
+| §5-4 | 全レンジ外（acc 合成 0.5〜1.9g / gyr ±30rad/s / mag 10〜100µT）が 1s 継続 | `ESP.restart()` |
 
 - 原因は再起動ログ `#RESTART <理由>` に出力（例: `i2c-nack`, `9axis-frozen`, `range-out`）
 
@@ -124,7 +132,7 @@ static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };  // mag [TEST: -1→+1 変更
 2. ステータスバーの ✓（Build）→ →（Upload）で XIAO に書き込み
 3. PlatformIO Serial Monitor（115200）で確認
    - `#init OK` → `#gyro bias removed` → `seq,ax,ay,az,gx,gy,gz,mx,my,mz` の連続出力
-   - 水平静止で `az ≈ +1.0`、`ax, ay ≈ 0`
+   - 水平静止（部品面を上）で `az ≈ -1.0`、`ax, ay ≈ 0`
 
 設定（`platformio.ini`）: board=`seeed_xiao_esp32c3` / framework=arduino / lib=`wollewald/ICM20948_WE @ ^1.2.9`
 
@@ -149,11 +157,11 @@ uv run axis_capture.py --port COM9   # COM 番号は環境に合わせる
 
 ## 6. 次のアクション（既知の課題）
 
-2026/09/04 時点でコード修正は**未実施**。着手する場合は以下を順に実施する（詳細は `archive/KIMERA_AXIS_ANALYSIS.md`）。
+XIAO 側は **NED 出力で統一済み**（2026/09/04 適用）。残る作業は下流側の整合。
 
-1. `src/main.cpp` の `MAG_NED_SIGN` を `{ 1, 1, 1 }` → **`{ 1, -1, -1 }`** に変更して XIAO へ書き込み
-2. 同時に `boatimu.py`（本リポジトリ外・pypilot 側）の一時補正コード（`gz = -gz` など）を削除/無効化
-3. 符号反転で既存のハードアイアンオフセットが無効になるため、現地で 8 の字を含むフル 3D 再キャリブレーションを実施
+1. `boatimu.py`（本リポジトリ外・pypilot 側）の一時補正コード（`gz = -gz` や `SERIAL_MAG_CAL` 行列など）を削除し、RTIMULib/pypilot の軸設定を **NED（水平静止で az≈-1）** 前提に合わせる
+2. 座標系・符号の変更で既存のハードアイアンオフセットが無効になるため、現地で 8 の字を含むフル 3D 再キャリブレーションを実施
+3. 実機で方位・姿勢（ロール・ピッチ・ヘディング）の符号を確認（経緯は `archive/KIMERA_AXIS_ANALYSIS.md` 参照）
 
 ---
 
@@ -161,8 +169,8 @@ uv run axis_capture.py --port COM9   # COM 番号は環境に合わせる
 
 | ファイル | 内容 |
 | --- | --- |
-| `AXIS_CALIBRATION.md` | 2026/09/02 までの軸マッピング実験手順・実測記録（現ファームは z-up 化済みのため手順は過去のもの） |
-| `KIMERA_AXIS_ANALYSIS.md` | 2026/09/04 の座標系キメラ問題の根本原因解析（§6 の要約が本編） |
+| `AXIS_CALIBRATION.md` | 2026/09/02 までの軸マッピング実験手順・実測記録（現ファームは NED 出力のため手順は過去のもの） |
+| `KIMERA_AXIS_ANALYSIS.md` | 2026/09/04 の座標系キメラ問題の根本原因解析（NED 統一により解消。方針は §3-4 / §6 参照） |
 | `instruction.md` | 旧 Wi-Fi ダッシュボード版（AP 起動 + ブラウザ表示）の作業指示書。現行 CSV ファームとは非対応 |
 | `main_wifi_dashboard.cpp.txt` | 旧 Wi-Fi ダッシュボード版ファームの退避コピー（元 `backup/`） |
 | `rotation_visualizer.py` | 旧ファーム出力（`ms,mx,my,mz,total,roll,pitch,heading`）用の 3D 可視化ツール |
