@@ -5,14 +5,16 @@
  *   ・I2Cタイミングバグ / フリーズに対してフェイルセーフ(自己修復)を内蔵
  *   ・単位変換済みCSVを100Hz / USB CDC経由で連続送信
  *
- * 【出力フォーマット】(単位込み・タイムスタンプなし・NED右手系)
+ * 【出力フォーマット】(単位込み・タイムスタンプなし・NED右手系 / 加速度は重力ベクトル表記)
  *   seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
  *   seq    : 0..65535 循環の連番(欠落検知用)
- *   ax..az : 加速度 [g]      (NED: 水平静止で az=-1。X=北, Y=東, Z=下)
+ *   ax..az : 加速度 [g]      (静止: 部品面を上で az=+1。X=北, Y=東, Z=下)
  *   gx..gz : ジャイロ [rad/s](NED: 右ねじ正。上から見て時計回りが +gz)
  *   mx..mz : 地磁気 [µT]     (NED: Z は下向き正)
- *   ※ 加速度・ジャイロの生チップ軸は NWU(X=北, Y=西, Z=上)のため、
- *      Y と Z を反転して NED(X=北, Y=東, Z=下)に統一した。
+ *   ※ 加速度・ジャイロの生チップ軸は NWU(X=北, Y=西, Z=上)。
+ *      ジャイロは Y・Z を反転して NED(X=北, Y=東, Z=下)右手系に統一。
+ *      加速度は「重力ベクトル」として扱うため、上記とは別に全軸反転し、
+ *      水平静止(部品面を上)で az=+1 になるようにしている。
  *      地磁気(AK09916)は生チップ軸が既に NED のため反転しない。
  *      基板X(印字)を北に置くと X=北, Y=東, Z=下。
  *
@@ -66,21 +68,25 @@ static const float MAG_MAX_UT    = 100.0f;
 
 static const float D2R = 0.017453292519943295f;  // deg -> rad
 
-/* ================= 軸マッピング(NED 右手系) =================
- * 加速度・ジャイロ(生チップ軸 = NWU: X=北, Y=西, Z=上)を NED に統一する。
- *   NWU: x=+ax, y=+ay, z=+az  →  NED: x=+ax, y=-ay, z=-az
- * 「Z だけ反転」だと左手系(外積計算が破綻)になるため、Y と同時に反転する。
+/* ================= 軸マッピング(NED 右手系・加速度は重力ベクトル表記) =================
+ * 生チップ軸は NWU(X=北, Y=西, Z=上)。ジャイロと地磁気を NED に統一し、
+ * 加速度は「重力ベクトル(=比力の反転)」として出力する。
+ * 「Z だけ反転」だと左手系(外積計算が破綻)になるため、軸を反転するときは
+ * Y と Z を同時に反転する(ジャイロが該当)。
  *
  * 出力フレーム(NED = X=北, Y=東, Z=下 の右手系):
  *   基板X(印字)を北に置くと X=北, Y=東, Z=下。
- *   加速度・ジャイロ(同一パッケージ内で軸共有):
- *     x=+ax, y=-ay, z=-az   (Y・Z を反転して NED 化)
+ *   加速度(重力ベクトル表記・水平静止で az=+1):
+ *     x=-ax, y=+ay, z=+az     (比力は上向き正で測られるため全軸反転)
+ *   ジャイロ(同一パッケージ内で加速度と軸共有):
+ *     x=+gx, y=-gy, z=-gz     (Y・Z を反転して NED 右手系)
  *   地磁気(AK09916 は別ダイで Y・Z が加速度と反転実装):
- *     x=+mx, y=+my, z=+mz   (生チップ軸が既に NED のため反転なし)
+ *     x=+mx, y=+my, z=+mz     (生チップ軸が既に NED のため反転なし)
  * 現状は「軸の入れ替えなし・符号のみ」のため係数は ±1。
  */
-static const int8_t AG_NED_SIGN[3] = {  1, -1, -1 };  // accel / gyro 共通 (NWU→NED: Y・Z 反転)
-static const int8_t MAG_NED_SIGN[3] = {  1,  1,  1 };  // mag (AK09916 は生チップ軸が NED のため反転なし)
+static const int8_t ACCEL_SIGN[3] = { -1,  1,  1 };  // accel [g]     (重力ベクトル表記)
+static const int8_t GYRO_SIGN[3]  = {  1, -1, -1 };  // gyro  [rad/s] (NED 右手系)
+static const int8_t MAG_SIGN[3]   = {  1,  1,  1 };  // mag   [uT]    (AK09916 生軸 = NED)
 
 ICM20948_WE imu(IMU_I2C_ADDR);
 
@@ -209,14 +215,14 @@ static void sampleAndSend(uint32_t nowUs) {
     imu.getGyrValues(&gyrV);   // [dps] -> rad/s へ変換
     imu.getMagValues(&magV);   // [uT]
 
-    /* 生センサ軸 → NED(X=北, Y=東, Z=下)へ変換してから出力する */
+    /* 生センサ軸 → NED 座標(加速度は重力ベクトル表記)へ変換してから出力する */
     float acc[3] = { gV.x,         gV.y,         gV.z };
     float gyr[3] = { gyrV.x * D2R, gyrV.y * D2R, gyrV.z * D2R };
     float mag[3] = { magV.x,       magV.y,       magV.z };
     for (int i = 0; i < 3; i++) {
-        cur[i]     = acc[i] * AG_NED_SIGN[i];  // accel [g]    (NED)
-        cur[3 + i] = gyr[i] * AG_NED_SIGN[i];  // gyro  [rad/s](NED)
-        cur[6 + i] = mag[i] * MAG_NED_SIGN[i]; // mag   [uT]   (NED)
+        cur[i]     = acc[i] * ACCEL_SIGN[i];  // accel [g]    (重力ベクトル: 静止で az=+1)
+        cur[3 + i] = gyr[i] * GYRO_SIGN[i];   // gyro  [rad/s](NED 右手系)
+        cur[6 + i] = mag[i] * MAG_SIGN[i];    // mag   [uT]   (NED)
     }
 
     /* ---- 起動時ジャイロバイアス キャリブレーション(静止前提) ---- */

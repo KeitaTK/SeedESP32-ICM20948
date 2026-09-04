@@ -11,13 +11,14 @@ and shows them in realtime as 3x3 analog-tachometer-style gauges.
   cols = axes    : X / Y / Z
 
 Usage (run inside visualizer/):
-    uv run gauge_monitor.py                      # default: COM9 / dummy fixed values
+    uv run gauge_monitor.py                      # default: COM10 / dummy fixed values
     uv run gauge_monitor.py --live --port COM10  # read live USB serial
     uv run gauge_monitor.py --selftest           # headless draw check (no GUI)
 
 Notes:
 - This tool assumes the XIAO already transmits NED-converted values.
-  When level (component side up), az is displayed around -1.0.
+  When level (component side up), az is displayed around +1.0 (accel is
+  output as a "gravity vector", i.e. down = positive in NED).
 - Lines starting with '#' (e.g. "#init OK") are diagnostic and are skipped.
 """
 
@@ -29,18 +30,31 @@ import time
 import matplotlib.pyplot as plt
 from matplotlib.patches import Arc, Circle
 
+# ----------------------------------------------------------------------
+# Japanese font setup for matplotlib (prevent mojibake/tofu on the GUI)
+# ----------------------------------------------------------------------
+def _setup_japanese_font():
+    from matplotlib import font_manager
+    installed = {f.name for f in font_manager.fontManager.ttflist}
+    for fam in ("Yu Gothic UI", "Yu Gothic", "Meiryo", "MS Gothic",
+                "BIZ UDPGothic", "Noto Sans CJK JP", "IPAexGothic"):
+        if fam in installed:
+            plt.rcParams["font.family"] = fam
+            break
+    plt.rcParams["axes.unicode_minus"] = False  # マイナス記号を正しく描画
+
 # ======================================================================
 # Configuration (edit here)
 # ======================================================================
 DUMMY_DATA = True   # True: show fixed dummy values without USB serial
                     #      (set False to read live data from COM_PORT)
 DUMMY_VALUES = [    # fixed dummy values (NED, level-equivalent)
-    0.05,  -0.10,  -1.00,   # ax, ay, az [g]       az=-1 (down positive)
+    0.05,   0.10,   1.00,   # ax, ay, az [g]       az=+1 (gravity vector, down positive)
     0.010, -0.020,  0.030,  # gx, gy, gz [rad/s]   ~0 at rest
     28.0,   5.0,   35.0,    # mx, my, mz [uT]      north mx>0 / down mz>0
 ]
 
-COM_PORT = "COM9"
+COM_PORT = "COM10"  # XIAO enumerates as COM10 on this PC. Check with: pio device list
 BAUD     = 115200
 
 # --- gauge display ranges (derived from each sensor full scale) ---
@@ -54,8 +68,8 @@ MAG_FS_UT   = 100.0   # mag    +-100uT (AK09916 native FS is +-4912uT, but set
 REFRESH_MS  = 100     # refresh interval [ms] (=10Hz drawing)
 
 ROW_UNITS  = ["g", "rad/s", "uT"]
-ROW_NAMES  = ["accel", "gyro", "mag"]
-ROW_DIGITS = [3, 3, 1]              # decimal digits for numeric readout
+ROW_NAMES  = ["accel", "gyro", "mag"]   # GUI の行名は英語表示
+ROW_DIGITS = [3, 3, 1]              # 数値表示の小数桁
 # ======================================================================
 
 
@@ -211,7 +225,7 @@ def main():
         print("        needles stay at 0 until data arrives")
     else:
         print("[dummy] showing fixed dummy values")
-        print("        (NED level-equivalent: az=-1.0 / mz=+35uT)")
+        print("        (NED, accel gravity-vector: az=+1.0 / mz=+35uT)")
 
     gauge_max = [ACCEL_FS_G, GYRO_FS_DPS * math.pi / 180.0, MAG_FS_UT]
     fig = plt.figure(figsize=(12, 6.5))

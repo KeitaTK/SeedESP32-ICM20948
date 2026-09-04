@@ -74,9 +74,9 @@
    - ジャイロ: `raw × gyrRangeFactor × 250.0 / 32768.0` → **[dps]** → ファーム側で `× π/180` して **[rad/s]**
    - 地磁気: `raw × 0.1495` → **[µT]**
 3. **軸合わせ（符号係数 ±1 の乗算）を float 値に対して適用**
-   - 加速度: `cur[0..2] = gV × AG_NED_SIGN`
-   - ジャイロ: `cur[3..5] = gyrV[rad/s] × AG_NED_SIGN`
-   - 地磁気: `cur[6..8] = magV × MAG_NED_SIGN`
+   - 加速度: `cur[0..2] = gV × ACCEL_SIGN`（重力ベクトル表記）
+   - ジャイロ: `cur[3..5] = gyrV[rad/s] × GYRO_SIGN`（NED 右手系）
+   - 地磁気: `cur[6..8] = magV × MAG_SIGN`
 4. **ジャイロバイアス除去**（起動時 250 サンプル＝2.5 秒の静止平均を減算。完了まで送信スキップ）
 5. テキスト CSV で送信（`seq,ax,ay,az,gx,gy,gz,mx,my,mz\n`）
    - acc/gyro は小数 5 桁、mag は小数 2 桁
@@ -94,24 +94,29 @@ seq,ax,ay,az,gx,gy,gz,mx,my,mz\n
 ```
 
 - 座標系は **NED 右手系（基板X を北に置くと X=北, Y=東, Z=下）**
-  加速度・ジャイロ（生軸 NWU）は Y・Z を反転、地磁気（AK09916 生軸 NED）は反転なしで NED に統一
-- 水平静止（部品面を上）では `az ≈ -1.0`。ジャイロは Z が下向き正のため「上から見て時計回り」が `gz > 0`
+  ジャイロは Y・Z 反転で NED、地磁気（AK09916 生軸 NED）は反転なしで統一。
+  加速度は **重力ベクトル表記**（比力を全軸反転）で出力
+- 水平静止（部品面を上）では `az ≈ +1.0`。ジャイロは「上から見て時計回り」が `gz > 0`、
+  地磁気 `mz` は下向き正
 - `#` 始まりの行は診断コメント（`#init OK` / `#gyro bias removed` / `#RESTART <理由>` など）
 
-### 3-4 軸合わせ（NED 出力に統一・2026/09/04 適用）
+### 3-4 軸合わせ（NED 座標・加速度は重力ベクトル表記・2026/09/04 適用）
 
-コード上の適用係数（`src/main.cpp` 82〜83 行）は以下のとおり。
+コード上の適用係数（`src/main.cpp` 87〜89 行）は以下のとおり。
 
 ```cpp
-static const int8_t AG_NED_SIGN[3]  = { 1, -1, -1 };  // accel / gyro 共通 (NWU→NED: Y・Z 反転)
-static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };    // mag (AK09916 は生チップ軸が NED のため反転なし)
+static const int8_t ACCEL_SIGN[3] = { -1, 1, 1 };  // accel [g]     (重力ベクトル表記)
+static const int8_t GYRO_SIGN[3]  = { 1, -1, -1 }; // gyro  [rad/s] (NED 右手系)
+static const int8_t MAG_SIGN[3]   = { 1, 1, 1 };   // mag   [uT]    (AK09916 生軸 = NED)
 ```
 
-- 加速度・ジャイロの生チップ軸は **NWU（X=北, Y=西, Z=上）**、地磁気（AK09916）は
-  **NED（X=北, Y=東, Z=下）** で実装されている。出力を **NED に統一**する。
-- 「Z だけ反転」だと左手系になるため、AG は **Y と Z を同時に反転**して NED 化する。
+- ジャイロの生チップ軸は **NWU（X=北, Y=西, Z=上）** のため **Y・Z を反転**して
+  NED（X=北, Y=東, Z=下）に統一（「Z だけ反転」だと左手系になるため Y と同時に反転）。
+- 加速度は「重力ベクトル」として扱うため、その上で **さらに全軸反転**し、
+  水平静止（部品面を上）で `az ≈ +1.0` になるようにしている（上向き正の比力を下向き正に変換）。
+- 地磁気（AK09916）は生チップ軸が既に NED のため反転なし（`mz` は下向き正）。
 - この方針は `archive/KIMERA_AXIS_ANALYSIS.md` が指摘した「AG=NWU / MAG=NED の混在（キメラ状態）」を
-  **NED 側に統一して解消**するもの。下流（pypilot/RTIMULib）側の軸設定も NED 前提で整合させること。
+  **NED 側に統一して解消**するもの。下流（pypilot/RTIMULib）側の軸設定もこの出力前提で整合させること。
 
 ### 3-5 フェイルセーフ（自己修復）
 
@@ -132,7 +137,7 @@ static const int8_t MAG_NED_SIGN[3] = { 1, 1, 1 };    // mag (AK09916 は生チ�
 2. ステータスバーの ✓（Build）→ →（Upload）で XIAO に書き込み
 3. PlatformIO Serial Monitor（115200）で確認
    - `#init OK` → `#gyro bias removed` → `seq,ax,ay,az,gx,gy,gz,mx,my,mz` の連続出力
-   - 水平静止（部品面を上）で `az ≈ -1.0`、`ax, ay ≈ 0`
+   - 水平静止（部品面を上）で `az ≈ +1.0`、`ax, ay ≈ 0`
 
 設定（`platformio.ini`）: board=`seeed_xiao_esp32c3` / framework=arduino / lib=`wollewald/ICM20948_WE @ ^1.2.9`
 
@@ -158,15 +163,16 @@ uv run axis_capture.py --port COM9   # COM 番号は環境に合わせる
 ```powershell
 cd visualizer
 uv run gauge_monitor.py                      # ダミー固定値表示（既定）
-uv run gauge_monitor.py --live --port COM9   # 実機のUSBシリアルをリアルタイム表示
+uv run gauge_monitor.py --live --port COM10  # 実機のUSBシリアルをリアルタイム表示
 uv run gauge_monitor.py --selftest           # GUIを開かず描画動作だけ確認
 ```
+> COM番号は環境依存。このPCでは XIAO = COM10（`pio device list` で確認）。ファイル冒頭の `COM_PORT` でも変更可。
 
 - 送信値（NED）を **3行×3列**（行 = accel [g] / gyro [rad/s] / mag [µT]、列 = X/Y/Z 軸）の
   アナログタコメーター風ゲージでリアルタイム表示する
 - ゲージの振れ幅はセンサのフルスケール相当（±2g / ±250dps→rad/s / ±100µT）から算出
   （値はファイル冒頭の `ACCEL_FS_G` / `GYRO_FS_DPS` / `MAG_FS_UT` で変更可）
-- 冒頭の `DUMMY_DATA = True` なら USB 接続なしで固定ダミー値（NED 水平静止相当: az=-1.0）を表示
+- 冒頭の `DUMMY_DATA = True` なら USB 接続なしで固定ダミー値（NED 重力ベクトル表記・水平静止相当: az=+1.0）を表示
   `--live` を付けるとダミーを無効化し COM ポートを読み取る
 - 初回は matplotlib / numpy などの導入のため `uv run` が数分かかることがある
 
@@ -174,9 +180,9 @@ uv run gauge_monitor.py --selftest           # GUIを開かず描画動作だけ
 
 ## 6. 次のアクション（既知の課題）
 
-XIAO 側は **NED 出力で統一済み**（2026/09/04 適用）。残る作業は下流側の整合。
+XIAO 側は **NED 座標で統一済み**（2026/09/04 適用。加速度は重力ベクトル表記なので静止で az≈+1）。残る作業は下流側の整合。
 
-1. `boatimu.py`（本リポジトリ外・pypilot 側）の一時補正コード（`gz = -gz` や `SERIAL_MAG_CAL` 行列など）を削除し、RTIMULib/pypilot の軸設定を **NED（水平静止で az≈-1）** 前提に合わせる
+1. `boatimu.py`（本リポジトリ外・pypilot 側）の一時補正コード（`gz = -gz` や `SERIAL_MAG_CAL` 行列など）を削除し、RTIMULib/pypilot の軸設定を本出力（静止 az≈+1 / 地磁気 Z 下向き正）に合わせる
 2. 座標系・符号の変更で既存のハードアイアンオフセットが無効になるため、現地で 8 の字を含むフル 3D 再キャリブレーションを実施
 3. 実機で方位・姿勢（ロール・ピッチ・ヘディング）の符号を確認（経緯は `archive/KIMERA_AXIS_ANALYSIS.md` 参照）
 
